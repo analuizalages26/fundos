@@ -1,0 +1,9 @@
+{
+  "name": "fundos-br",
+  "version": "1.0.0",
+  "description": "Dashboard de fundos CVM",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "iconv-lite": "^0.6.3"
+  }
+}

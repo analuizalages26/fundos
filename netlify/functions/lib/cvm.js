@@ -100,7 +100,7 @@ function toYYYYMM(date) {
 function buildCotaIndex(rows) {
   const idx = {};
   for (const r of rows) {
-    const cnpj  = (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g, '').trim();
+    const cnpj  = (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g, '').trim().padStart(14, '0');
     const dt    = r.DT_COMPTC || r.DT_REF || '';
     const quota = parseFloat((r.VL_QUOTA      || '0').replace(',', '.'));
     const pl    = parseFloat((r.VL_PATRIM_LIQ || '0').replace(',', '.'));
@@ -174,7 +174,7 @@ async function fetchCadastro() {
     const rows = parseCSV(text);
     for (const r of rows) {
       all.push({
-        CNPJ_FUNDO:   (r.CNPJ_FUNDO || '').replace(/[.\-\/]/g, '').trim(),
+        CNPJ_FUNDO:   (r.CNPJ_FUNDO || '').replace(/[.\-\/]/g, '').trim().padStart(14, '0'),
         DENOM_SOCIAL: r.DENOM_SOCIAL || '',
         TP_FUNDO:     r.TP_FUNDO || r.CLASSE || '',
         SIT:          r.SIT || '',
@@ -193,7 +193,7 @@ async function fetchCadastro() {
       const rows = parseCSV(f.content);
       for (const r of rows) {
         all.push({
-          CNPJ_FUNDO:   (r.CNPJ_Classe || '').replace(/[.\-\/]/g, '').trim(),
+          CNPJ_FUNDO:   (r.CNPJ_Classe || '').replace(/[.\-\/]/g, '').trim().padStart(14, '0'),
           DENOM_SOCIAL: r.Denominacao_Social || '',
           TP_FUNDO:     r.Tipo_Classe || '',
           SIT:          r.Situacao || '',

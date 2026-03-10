@@ -31,10 +31,10 @@ async function buildFunds(baseDate) {
   const fundMap = {};
 
   for (const f of cadRows) {
-    const sit  = (f.SIT || f.SITUACAO || '').toUpperCase();
-    const nome = (f.DENOM_SOCIAL || f.NOME_FUNDO || '').trim();
-    const tipo = (f.TP_FUNDO || f.CLASSE || '').trim();
-    const cnpj = (f.CNPJ_FUNDO || f.CNPJ || '').trim();
+    const sit  = (f.SIT || f.SITUACAO || f.CD_SITUACAO || '').toUpperCase();
+    const nome = (f.DENOM_SOCIAL || f.NOME_FUNDO || f.NM_FUNDO || '').trim();
+    const tipo = (f.TP_FUNDO || f.CLASSE || f.TP_FUNDO_CLASSE || '').trim();
+    const cnpj = (f.CNPJ_FUNDO || f.CNPJ || f.CNPJ_FUNDO_CLASSE || '').trim();
     if (!cnpj) continue;
     if (!sit.includes('EM FUNCIONAMENTO') && !sit.includes('ATIVO')) continue;
     const nomeUp = nome.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');

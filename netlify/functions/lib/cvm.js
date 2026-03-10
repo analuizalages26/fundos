@@ -3,11 +3,12 @@
 
 const https = require('https');
 const http  = require('http');
+const zlib  = require('zlib');
 
 const CVM_BASE = 'https://dados.cvm.gov.br/dados/FI';
 
-// ─── HTTP fetch returning latin-1 decoded string ──────────────────────────────
-function fetchText(url, redirects = 0) {
+// ─── HTTP fetch → Buffer ──────────────────────────────────────────────────────
+function fetchBuffer(url, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('Too many redirects'));
     const client = url.startsWith('https') ? https : http;
@@ -16,25 +17,23 @@ function fetchText(url, redirects = 0) {
       timeout: 45000,
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchText(res.headers.location, redirects + 1).then(resolve).catch(reject);
+        return fetchBuffer(res.headers.location, redirects + 1).then(resolve).catch(reject);
       }
-      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} → ${url}`));
+      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} -> ${url}`));
       const chunks = [];
       res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        // CVM files are latin-1; decode properly
-        const buf = Buffer.concat(chunks);
-        try {
-          // Node native: try UTF-8 first, fall back to latin1
-          const text = buf.toString('latin1');
-          resolve(text);
-        } catch(e) { resolve(buf.toString('utf8')); }
-      });
+      res.on('end', () => resolve(Buffer.concat(chunks)));
       res.on('error', reject);
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Timeout: ' + url)); });
   });
+}
+
+// ─── HTTP fetch → latin1 string ──────────────────────────────────────────────
+async function fetchText(url) {
+  const buf = await fetchBuffer(url);
+  return buf.toString('latin1');
 }
 
 // ─── Parse semicolon CSV ──────────────────────────────────────────────────────
@@ -53,54 +52,71 @@ function parseCSV(text) {
   return out;
 }
 
+// ─── Simple ZIP parser — extract CSV files ───────────────────────────────────
+function unzipCSVs(buf) {
+  const results = [];
+  let offset = 0;
+  while (offset < buf.length - 30) {
+    if (buf[offset] === 0x50 && buf[offset+1] === 0x4b &&
+        buf[offset+2] === 0x03 && buf[offset+3] === 0x04) {
+      const compression    = buf.readUInt16LE(offset + 8);
+      const compressedSize = buf.readUInt32LE(offset + 18);
+      const fileNameLen    = buf.readUInt16LE(offset + 26);
+      const extraLen       = buf.readUInt16LE(offset + 28);
+      const fileName = buf.slice(offset + 30, offset + 30 + fileNameLen).toString();
+      const dataStart = offset + 30 + fileNameLen + extraLen;
+      if (fileName.toLowerCase().endsWith('.csv') && compressedSize > 0) {
+        try {
+          const compData = buf.slice(dataStart, dataStart + compressedSize);
+          const content = compression === 0
+            ? compData.toString('latin1')
+            : zlib.inflateRawSync(compData).toString('latin1');
+          results.push({ name: fileName, content });
+        } catch(e) {}
+      }
+      offset = dataStart + compressedSize;
+    } else {
+      offset++;
+    }
+  }
+  return results;
+}
+
 // ─── Fund category classification ────────────────────────────────────────────
 function classifyFund(tipo, nome) {
-  const t = (tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const n = (nome || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const s = ((tipo || '') + ' ' + (nome || '')).toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-  // Ações
-  if (/(ACOES|AÇÕES|FIA\b|FICFIA|LONG.?BIASED|LONG.?ONLY|SMALL.?CAP|VALOR|DIVIDENDO)/.test(t + ' ' + n)) return 'acoes';
-
-  // Crédito Privado / Renda Fixa
-  if (/(CREDITO.?PRIVADO|RENDA.?FIXA|DEBENTURE|CRI|CRA|FIAGRO|CREDIT|HIGH.?YIELD|INFLACAO|IPCA|CDI|RF\b|FIF\b)/.test(t + ' ' + n)) return 'credito';
-
-  // Multimercado
-  if (/(MULTIMERCADO|FIM\b|FICFIM|MACRO|QUANT|ARBITRAGEM|LONG.?SHORT|TREND|SYSTEMATIC|HEDGE)/.test(t + ' ' + n)) return 'multi';
+  if (/(ACOES|FIA\b|FICFIA|LONG.?BIASED|LONG.?ONLY|SMALL.?CAP|DIVIDENDO|VALOR)/.test(s)) return 'acoes';
+  if (/(CREDITO.?PRIV|RENDA.?FIXA|DEBENTURE|HIGH.?YIELD|INFLACAO|IPCA|RF\b|FIRF|FIC.?RF|CREDITO CORP)/.test(s)) return 'credito';
+  if (/(MULTIMERCADO|FIM\b|FICFIM|MACRO|QUANT|ARBITRAGEM|LONG.?SHORT|TREND|HEDGE|SISTEMATIC)/.test(s)) return 'multi';
 
   return null;
 }
 
-// ─── YYYYMM helpers ──────────────────────────────────────────────────────────
+// ─── YYYYMM helper ───────────────────────────────────────────────────────────
 function toYYYYMM(date) {
   return `${date.getFullYear()}${String(date.getMonth()+1).padStart(2,'0')}`;
 }
 
-function subtractMonths(dateStr, months) {
-  // dateStr: YYYY-MM-DD
-  const d = new Date(dateStr + 'T12:00:00Z');
-  d.setMonth(d.getMonth() - months);
-  return d;
-}
-
-// ─── Build cota index: cnpj → sorted array of {dt, quota, pl, cotistas} ──────
+// ─── Build cota index: cnpj -> sorted [{dt, quota, pl, cotistas}] ─────────────
 function buildCotaIndex(rows) {
   const idx = {};
   for (const r of rows) {
     const cnpj  = r.CNPJ_FUNDO || r.CNPJ || '';
     const dt    = r.DT_COMPTC  || r.DT_REF || '';
-    const quota = parseFloat((r.VL_QUOTA      || '0').replace(',','.'));
-    const pl    = parseFloat((r.VL_PATRIM_LIQ || '0').replace(',','.'));
+    const quota = parseFloat((r.VL_QUOTA      || '0').replace(',', '.'));
+    const pl    = parseFloat((r.VL_PATRIM_LIQ || '0').replace(',', '.'));
     const cot   = parseInt(r.NR_COTST || '0', 10);
     if (!cnpj || !dt || !quota) continue;
     if (!idx[cnpj]) idx[cnpj] = [];
     idx[cnpj].push({ dt, quota, pl, cotistas: cot });
   }
-  // sort ascending by date
-  for (const k of Object.keys(idx)) idx[k].sort((a,b) => a.dt < b.dt ? -1 : 1);
+  for (const k of Object.keys(idx)) idx[k].sort((a, b) => a.dt < b.dt ? -1 : 1);
   return idx;
 }
 
-// ─── Find closest entry on or before a target date string ────────────────────
+// ─── Closest entry on or before targetDt ────────────────────────────────────
 function closestBefore(entries, targetDt) {
   let best = null;
   for (const e of entries) {
@@ -110,15 +126,15 @@ function closestBefore(entries, targetDt) {
   return best;
 }
 
-// ─── Compute returns for a fund given a base date ────────────────────────────
+// ─── Compute returns ─────────────────────────────────────────────────────────
 function computeReturns(entries, baseDt) {
   const base = closestBefore(entries, baseDt);
   if (!base) return null;
 
-  const addMonths = (dt, m) => {
+  const shiftBack = (dt, months) => {
     const d = new Date(dt + 'T12:00:00Z');
-    d.setMonth(d.getMonth() - m);
-    return d.toISOString().slice(0,10);
+    d.setMonth(d.getMonth() - months);
+    return d.toISOString().slice(0, 10);
   };
 
   const ret = (from, to) => {
@@ -126,51 +142,89 @@ function computeReturns(entries, baseDt) {
     return (to.quota / from.quota - 1) * 100;
   };
 
-  // MTD: first trading day of base month
-  const baseYear  = baseDt.slice(0,4);
-  const baseMonth = baseDt.slice(5,7);
-  const startOfMonth = `${baseYear}-${baseMonth}-01`;
-  const mtdFrom = closestBefore(entries, startOfMonth) ||
-                  entries.find(e => e.dt >= startOfMonth) || entries[0];
-
-  // YTD: first trading day of base year
-  const startOfYear = `${baseYear}-01-01`;
-  const ytdFrom = closestBefore(entries, startOfYear) ||
-                  entries.find(e => e.dt >= startOfYear) || entries[0];
-
-  const from12m = closestBefore(entries, addMonths(baseDt, 12)) || entries[0];
-  const from24m = closestBefore(entries, addMonths(baseDt, 24)) || entries[0];
+  const y = baseDt.slice(0,4), m = baseDt.slice(5,7);
+  const mtdFrom = closestBefore(entries, `${y}-${m}-01`) || entries.find(e => e.dt >= `${y}-${m}-01`) || entries[0];
+  const ytdFrom = closestBefore(entries, `${y}-01-01`)   || entries.find(e => e.dt >= `${y}-01-01`)   || entries[0];
+  const from12m = closestBefore(entries, shiftBack(baseDt, 12)) || entries[0];
+  const from24m = closestBefore(entries, shiftBack(baseDt, 24)) || entries[0];
 
   return {
     retMTD: ret(mtdFrom, base),
     retYTD: ret(ytdFrom, base),
     ret12m: ret(from12m, base),
     ret24m: ret(from24m, base),
-    pl:     base.pl,
-    quota:  base.quota,
+    pl: base.pl,
+    quota: base.quota,
     cotistas: base.cotistas,
     lastDt: base.dt,
   };
 }
 
-// ─── Fetch + parse one month of daily cotas ──────────────────────────────────
+// ─── Fetch one month of daily cotas ──────────────────────────────────────────
 async function fetchCotaMonth(ym) {
-  const url = `${CVM_BASE}/INF/DIARIO/DADOS/inf_diario_fi_${ym}.csv`;
-  const text = await fetchText(url);
+  // CVM now distributes diario as zip files
+  const urlZip = `${CVM_BASE}/INF/DIARIO/DADOS/inf_diario_fi_${ym}.zip`;
+  const urlCsv = `${CVM_BASE}/INF/DIARIO/DADOS/inf_diario_fi_${ym}.csv`;
+
+  try {
+    const buf = await fetchBuffer(urlZip);
+    const csvs = unzipCSVs(buf);
+    if (csvs.length > 0) return parseCSV(csvs[0].content);
+  } catch(e) {}
+
+  // Fallback to plain CSV
+  const text = await fetchText(urlCsv);
   return parseCSV(text);
 }
 
-// ─── Fetch cadastro ───────────────────────────────────────────────────────────
+// ─── Fetch cadastro — merges old cad_fi.csv + new registro_fundo_classe.zip ──
 async function fetchCadastro() {
-  const url = `${CVM_BASE}/CAD/DADOS/cad_fi.csv`;
-  const text = await fetchText(url);
-  return parseCSV(text);
+  const allRows = [];
+
+  // 1. Old-format funds (not yet adapted to RCVM175)
+  try {
+    const text = await fetchText(`${CVM_BASE}/CAD/DADOS/cad_fi.csv`);
+    const rows = parseCSV(text);
+    // normalise to common field names
+    allRows.push(...rows.map(r => ({
+      CNPJ_FUNDO: r.CNPJ_FUNDO || r.CNPJ || '',
+      DENOM_SOCIAL: r.DENOM_SOCIAL || '',
+      TP_FUNDO: r.TP_FUNDO || '',
+      SIT: r.SIT || '',
+    })));
+    console.log(`cad_fi.csv: ${rows.length} rows`);
+  } catch(e) { console.warn('cad_fi.csv failed:', e.message); }
+
+  // 2. New-format funds (RCVM175) — ZIP contains registro_fundo.csv + registro_classe.csv
+  try {
+    const buf = await fetchBuffer(`${CVM_BASE}/CAD/DADOS/registro_fundo_classe.zip`);
+    const csvFiles = unzipCSVs(buf);
+    for (const f of csvFiles) {
+      const isClasse = f.name.toLowerCase().includes('classe');
+      const isFundo  = f.name.toLowerCase().includes('fundo') && !isClasse;
+      if (!isClasse && !isFundo) continue;
+      const rows = parseCSV(f.content);
+      console.log(`${f.name}: ${rows.length} rows`);
+      for (const r of rows) {
+        // registro_classe columns: CNPJ_FUNDO_CLASSE, Denominacao_Social, Tipo_Classe, Situacao
+        // registro_fundo columns:  CNPJ_Fundo, Denominacao_Social, Situacao
+        allRows.push({
+          CNPJ_FUNDO: r.CNPJ_FUNDO_CLASSE || r.CNPJ_Fundo || r.CNPJ_CLASSE || '',
+          DENOM_SOCIAL: r.Denominacao_Social || r.DENOM_SOCIAL || '',
+          TP_FUNDO: r.Tipo_Classe || r.TP_FUNDO_CLASSE || r.TP_FUNDO || '',
+          SIT: r.Situacao || r.SIT || '',
+        });
+      }
+    }
+  } catch(e) { console.warn('registro_fundo_classe.zip failed:', e.message); }
+
+  console.log(`Total cadastro rows: ${allRows.length}`);
+  return allRows;
 }
 
 module.exports = {
-  fetchText, parseCSV, classifyFund,
-  toYYYYMM, subtractMonths,
-  buildCotaIndex, closestBefore, computeReturns,
+  fetchText, fetchBuffer, parseCSV, classifyFund,
+  toYYYYMM, buildCotaIndex, closestBefore, computeReturns,
   fetchCotaMonth, fetchCadastro,
   CVM_BASE,
 };

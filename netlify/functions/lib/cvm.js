@@ -162,7 +162,7 @@ async function fetchCotaMonth(ym) {
 
 // ─── Fetch cadastro ───────────────────────────────────────────────────────────
 async function fetchCadastro() {
-  const url = `${CVM_BASE}/CAD/DADOS/inf_cadastral_fi.csv`;
+  const url = `${CVM_BASE}/CAD/DADOS/cad_fi.csv`;
   const text = await fetchText(url);
   return parseCSV(text);
 }

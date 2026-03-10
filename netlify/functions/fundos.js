@@ -29,7 +29,7 @@ exports.handler = async (event) => {
     const cadRows = await fetchCadastro();
     const fundMap = {};
     for (const f of cadRows) {
-      const cnpj = f.CNPJ_FUNDO;
+      const cnpj = (f.CNPJ_FUNDO || '').padStart(14, '0');
       if (!cnpj || cnpj.length < 11) continue;
 
       const sit = (f.SIT || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -59,7 +59,7 @@ exports.handler = async (event) => {
     console.log(`Total linhas de cotas: ${allRows.length}`);
 
     // 3. Normaliza CNPJ — diário usa CNPJ_FUNDO_CLASSE
-    const normCNPJ = r => (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g,'').trim();
+    const normCNPJ = r => (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g,'').trim().padStart(14,'0');
 
     const norm = allRows
       .map(r => ({ ...r, _cnpj: normCNPJ(r) }))

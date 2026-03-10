@@ -1,6 +1,4 @@
 // netlify/functions/fundos.js
-// GET /api/fundos?baseDate=YYYY-MM-DD
-
 const { fetchCadastro, fetchCotaMonth, classifyFund, toYYYYMM, buildCotaIndex, computeReturns } = require('./lib/cvm');
 
 const CORS = {
@@ -35,7 +33,6 @@ exports.handler = async (event) => {
       if (!cnpj || cnpj.length < 11) continue;
 
       const sit = (f.SIT || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-      // aceita "EM FUNCIONAMENTO" (antigo) ou "Em Funcionamento Normal" (novo RCVM175)
       if (!sit.includes('FUNCIONAMENTO') && !sit.includes('ATIVO')) continue;
 
       const nome = (f.DENOM_SOCIAL || '').trim();
@@ -51,7 +48,7 @@ exports.handler = async (event) => {
     console.log(`Fundos ativos mapeados: ${Object.keys(fundMap).length}`);
     const activeCNPJs = new Set(Object.keys(fundMap));
 
-    // 2. Cotas — busca os últimos 25 meses em paralelo (batches de 5)
+    // 2. Cotas
     const months = monthsRange(baseDate, 25);
     const allRows = [];
     for (let i = 0; i < months.length; i += 5) {
@@ -61,12 +58,16 @@ exports.handler = async (event) => {
     }
     console.log(`Total linhas de cotas: ${allRows.length}`);
 
-    // 3. Filtra e normaliza CNPJ
-    const norm = allRows
-      .filter(r => activeCNPJs.has((r.CNPJ_FUNDO || '').replace(/[.\-\/]/g,'').trim()))
-      .map(r => ({ ...r, CNPJ_FUNDO: (r.CNPJ_FUNDO || '').replace(/[.\-\/]/g,'').trim() }));
+    // 3. Normaliza CNPJ — diário usa CNPJ_FUNDO_CLASSE
+    const normCNPJ = r => (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g,'').trim();
 
-    const cotaIdx = buildCotaIndex(norm);
+    const norm = allRows
+      .map(r => ({ ...r, _cnpj: normCNPJ(r) }))
+      .filter(r => activeCNPJs.has(r._cnpj));
+
+    // Rebuild index com campo normalizado
+    const normRows = norm.map(r => ({ ...r, CNPJ_FUNDO: r._cnpj }));
+    const cotaIdx = buildCotaIndex(normRows);
     console.log(`Fundos com cotas: ${Object.keys(cotaIdx).length}`);
 
     // 4. Calcula retornos

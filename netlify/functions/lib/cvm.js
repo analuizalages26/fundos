@@ -100,7 +100,7 @@ function toYYYYMM(date) {
 function buildCotaIndex(rows) {
   const idx = {};
   for (const r of rows) {
-    const cnpj  = (r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g, '').trim();
+    const cnpj  = (r.CNPJ_FUNDO_CLASSE || r.CNPJ_FUNDO || r.CNPJ || '').replace(/[.\-\/]/g, '').trim();
     const dt    = r.DT_COMPTC || r.DT_REF || '';
     const quota = parseFloat((r.VL_QUOTA      || '0').replace(',', '.'));
     const pl    = parseFloat((r.VL_PATRIM_LIQ || '0').replace(',', '.'));
